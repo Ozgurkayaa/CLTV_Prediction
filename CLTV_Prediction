@@ -1,0 +1,80 @@
+##############################################################
+# BG-NBD ve Gamma-Gamma ile CLTV Prediction
+##############################################################
+
+###############################################################
+# İş Problemi (Business Problem)
+###############################################################
+# FLO satış ve pazarlama faaliyetleri için roadmap belirlemek istemektedir.
+# Şirketin orta uzun vadeli plan yapabilmesi için var olan müşterilerin
+# gelecekte şirkete sağlayacakları potansiyel değerin tahmin edilmesi gerekmektedir.
+
+###############################################################
+# Veri Seti Hikayesi
+###############################################################
+
+# Veri seti, 2020-2021 yıllarında OmniChannel (hem online hem offline alışveriş yapan)
+# müşterilerin geçmiş alışveriş davranışlarından elde edilen bilgilerden oluşmaktadır.
+
+# master_id: Eşsiz müşteri numarası
+# order_channel: Alışveriş yapılan platforma ait hangi kanalın kullanıldığı (Android, ios, Desktop, Mobile, Offline)
+# last_order_channel: En son alışverişin yapıldığı kanal
+# first_order_date: Müşterinin yaptığı ilk alışveriş tarihi
+# last_order_date: Müşterinin yaptığı son alışveriş tarihi
+# last_order_date_online: Müşterinin online platformda yaptığı son alışveriş tarihi
+# last_order_date_offline: Müşterinin offline platformda yaptığı son alışveriş tarihi
+# order_num_total_ever_online: Müşterinin online platformda yaptığı toplam alışveriş sayısı
+# order_num_total_ever_offline: Müşterinin offline'da yaptığı toplam alışveriş sayısı
+# customer_value_total_ever_offline: Müşterinin offline alışverişlerinde ödediği toplam ücret
+# customer_value_total_ever_online: Müşterinin online alışverişlerinde ödediği toplam ücret
+# interested_in_categories_12: Müşterinin son 12 ayda alışveriş yaptığı kategorilerin listesi
+
+###############################################################
+# GÖREVLER
+###############################################################
+# 1. Veriyi Hazırlama
+# 2. BG-NBD Modeli ile Expected Sales Prediction
+# 3. Gamma-Gamma Modeli ile Expected Average Value
+# 4. BG-NBD ve Gamma-Gamma ile CLTV'nin Hesaplanması
+# 5. CLTV'ye göre Segmentlerin Oluşturulması
+
+# İlgili kütüphaneleri yükleme ve veri setinin işlenmesi bölümleri burada yer alıyor.
+
+from lifetimes import BetaGeoFitter, GammaGammaFitter
+import pandas as pd
+import numpy as np
+
+# CLTV hesaplama fonksiyonu
+def create_cltv_df(dataframe):
+    # Veriyi hazırlama
+    dataframe["order_num_total"] = dataframe["order_num_total_ever_online"] + dataframe["order_num_total_ever_offline"]
+    dataframe["customer_value_total"] = dataframe["customer_value_total_ever_online"] + dataframe["customer_value_total_ever_offline"]
+    
+    # Haftalık recency, T ve monetary değerlerin hesaplanması
+    dataframe["recency_cltv_weekly"] = dataframe["last_order_date"] - dataframe["first_order_date"]
+    dataframe["T_weekly"] = dataframe["today_date"] - dataframe["first_order_date"]
+    dataframe["monetary_cltv_avg"] = dataframe["customer_value_total"] / dataframe["order_num_total"]
+    dataframe = dataframe[(dataframe['frequency'] > 1)]
+    
+    # BG-NBD Modelinin Kurulması
+    bgf = BetaGeoFitter(penalizer_coef=0.001)
+    bgf.fit(dataframe['frequency'], dataframe['recency_cltv_weekly'], dataframe['T_weekly'])
+    dataframe["exp_sales_3_month"] = bgf.predict(4 * 3, dataframe['frequency'], dataframe['recency_cltv_weekly'], dataframe['T_weekly'])
+    
+    # Gamma-Gamma Modelinin Kurulması
+    ggf = GammaGammaFitter(penalizer_coef=0.01)
+    ggf.fit(dataframe['frequency'], dataframe['monetary_cltv_avg'])
+    dataframe["exp_average_value"] = ggf.conditional_expected_average_profit(dataframe['frequency'], dataframe['monetary_cltv_avg'])
+    
+    # CLTV hesaplama
+    cltv = ggf.customer_lifetime_value(bgf, dataframe['frequency'], dataframe['recency_cltv_weekly'], dataframe['T_weekly'], dataframe['monetary_cltv_avg'], time=6, freq="W", discount_rate=0.01)
+    dataframe["cltv"] = cltv
+    
+    # CLTV segmentleme
+    dataframe["cltv_segment"] = pd.qcut(dataframe["cltv"], 4, labels=["D", "C", "B", "A"])
+    
+    return dataframe
+
+# Örnek bir veri seti üzerinde çalıştırma
+cltv_df = create_cltv_df(df)
+cltv_df.head(10)
